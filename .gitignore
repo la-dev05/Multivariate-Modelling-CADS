@@ -1,10 +1,5 @@
-# Ignore everything by default
-/*
-
 # But track these specific items
 !.gitignore
-!CADS_Project.ipynb
-!dataverse_files/
 
 # Common Python/Jupyter artifacts to ignore
 __pycache__/
@@ -31,13 +26,6 @@ wheels/
 .installed.cfg
 *.egg
 
-# Jupyter Notebook
-.ipynb_checkpoints/
-*.ipynb_checkpoints/
-
-# IPython
-.ipython/
-
 # Environment
 .env
 .venv
@@ -58,3 +46,9 @@ CADS Project Proposal.md
 
 # Large data files (exceeds GitHub limit)
 *.dta
+
+# Python
+test_pipeline.py
+CADS_Report.md
+
+v1/dataverse_files
