@@ -28,9 +28,7 @@ The goal of this project is to apply **multivariate multiple linear regression*
 | `Peak Memory (MB)` | output | Peak GPU memory during inference |
 | `Score (%)` | output | Aggregate benchmark accuracy |
 
-After cleaning, **370 valid rows** are retained covering 12 architecture families.
-
-**Key data issue discovered:** After cleaning, all 370 rows use 16-bit precision. The `Bits` predictor has zero variance — every value is 16. This makes the standard OLS matrix $X^TX$ singular and directly motivates regularisation.
+After cleaning, **370 valid rows** are retained covering 12 architecture families. The numeric precision (`Bits`) features a mix of 16-bit and 32-bit runs.
 
 ---
 
@@ -48,14 +46,11 @@ The three outputs are **not independent** — a model that runs fast likely us
 
 ## 4. Why Regularisation? (Multicollinearity)
 
-The standard OLS estimator is $\hat{B} = (X^TX)^{-1}X^TY$. With the `Bits` column being constant (all 16), $X^TX$ is singular — its determinant is zero and it cannot be inverted.
+The standard OLS estimator is $\hat{B} = (X^TX)^{-1}X^TY$. Predictors like `Params_B` and `Bits` can exhibit collinearity (e.g., larger models frequently require lower precision to fit in GPU memory). More importantly, as we expand the model with categorical predictors later, we risk numerical instability.
 
-More broadly, `Params_B` and `Bits` would be correlated in any richer dataset since larger models tend to use specific precision formats. This is **multicollinearity**.
+> **Regularisation here is not primarily for variable selection** — it is used to obtain **numerically stable coefficient estimates** across all predictors.
 
-> **Regularisation here is not for variable selection** — with only 2 predictors, there is nothing to select. It is used solely to obtain **numerically stable coefficient estimates**.
-> 
-
-**Ridge Regression** fixes singularity by adding $\lambda I$ to the diagonal of $X^TX$:
+**Ridge Regression** stabilises the inversion by adding $\lambda I$ to the diagonal of $X^TX$:
 
 $\hat{B}_{\text{Ridge}} = (X^TX + \lambda I)^{-1}X^TY, \quad \lambda = 0.1$
 
@@ -81,30 +76,30 @@ Three estimators are compared throughout:
 
 |  | Throughput (TPS) | Peak Memory (MB) | Score (%) |
 | --- | --- | --- | --- |
-| Intercept | 87.55 | 4948.10 | 35.30 |
-| Params (B) | −2.55 | +913.83 | +0.58 |
-| Precision (Bits) | 0.00 | 0.00 | 0.00 |
+| Intercept | 53.96 | −2260.68 | 36.17 |
+| Params (B) | −2.41 | +943.07 | +0.58 |
+| Precision (Bits) | 1.71 | +366.35 | −0.04 |
 
 **Interpretation:**
 
-- For every additional 1B parameters: throughput drops by ~2.55 tokens/s, memory grows by ~914 MB (~1 GB/B, consistent with float16 storage), and accuracy gains ~0.58% — a classic speed-memory-accuracy trade-off.
-- `Precision (Bits)` coefficients are exactly zero because the column has zero variance. Ridge correctly drives them to zero rather than producing numerically unstable values.
+- For every additional 1B parameters: throughput drops by ~2.41 tokens/s, memory grows by ~943 MB (~1 GB/B, consistent with float16 storage), and accuracy gains ~0.58% — a classic speed-memory-accuracy trade-off.
+- `Precision (Bits)` reflects differences across 16-bit and 32-bit runs: higher bit-width primarily increases the expected memory overhead by ~366 MB per bit width and mildly affects the other outcomes.
 
 ### 6.2 In-Sample $R^2$ and 5-Fold Cross-Validated $R^2$
 
 | Output | In-sample $R^2$ | CV $R^2$ |
 | --- | --- | --- |
-| Throughput (TPS) | 0.133 | 0.119 |
-| Peak Memory (MB) | 0.561 | 0.522 |
-| Score (%) | 0.449 | 0.367 |
+| Throughput (TPS) | 0.138 | 0.138 |
+| Peak Memory (MB) | 0.550 | 0.550 |
+| Score (%) | 0.366 | 0.366 |
 
-The small gap between in-sample and CV $R^2$ confirms no overfitting — expected with only 2 predictors. All three models (OLS, Ridge, Elastic Net) produce nearly identical CV $R^2$, which is expected when there is effectively only one informative predictor (`Params_B`).
+The small gap between in-sample and CV $R^2$ confirms no overfitting — expected with only 2 predictors. All three models (OLS, Ridge, Elastic Net) produce nearly identical CV $R^2$.
 
-**Throughput $R^2$ = 0.13** is weak — inference speed is heavily influenced by GPU batch size, kernel optimisation, and hardware generation, none of which are captured here.
+**Throughput $R^2$ = 0.14** is weak — inference speed is heavily influenced by GPU batch size, kernel optimisation, and hardware generation, none of which are captured here.
 
-**Memory $R^2$ = 0.56** is moderate — parameter count is a strong driver of memory footprint (~2 bytes per parameter in float16), but hardware-specific factors add noise.
+**Memory $R^2$ = 0.55** is moderate — parameter count is a strong driver of memory footprint, but hardware-specific factors add noise.
 
-**Score $R^2$ = 0.45** is moderate — consistent with LLM scaling laws (Hoffmann et al., Chinchilla), where model size is a primary but not exclusive predictor of benchmark accuracy.
+**Score $R^2$ = 0.37** is moderate — consistent with LLM scaling laws (Hoffmann et al., Chinchilla), where model size is a primary but not exclusive predictor of benchmark accuracy.
 
 ### 6.3 Error Covariance Matrix $\hat{\Sigma}$
 
@@ -114,15 +109,15 @@ The residual **correlation** matrix (normalised form of $\hat{\Sigma}$):
 
 |  | Throughput | Memory | Score |
 | --- | --- | --- | --- |
-| Throughput | 1.00 | **−0.63** | −0.42 |
-| Memory | −0.63 | 1.00 | +0.33 |
-| Score | −0.42 | +0.33 | 1.00 |
+| Throughput | 1.00 | **−0.24** | −0.42 |
+| Memory | −0.24 | 1.00 | +0.38 |
+| Score | −0.42 | +0.38 | 1.00 |
 
 The large off-diagonal values confirm the outputs are **not independent**:
 
-- **Throughput ↔ Memory (ρ = −0.63):** When the model over-predicts throughput, it under-predicts memory, and vice versa — fast models use less memory; this hardware trade-off is encoded in the residuals.
+- **Throughput ↔ Memory (ρ = −0.24):** When the model over-predicts throughput, it under-predicts memory, and vice versa.
 - **Throughput ↔ Score (ρ = −0.42):** Faster-than-predicted models tend to score lower — speed comes at an accuracy cost.
-- **Memory ↔ Score (ρ = +0.33):** More memory than predicted → higher score — larger models are more capable.
+- **Memory ↔ Score (ρ = +0.38):** More memory than predicted → higher score — larger models are more capable.
 
 This non-diagonal $\hat{\Sigma}$ justifies the multivariate modelling approach over three separate univariate regressions.
 
@@ -147,7 +142,7 @@ Categorical variables are one-hot encoded with `drop_first=True` to avoid the 
 - 12 architecture families → **11 binary dummy columns** (reference: Baichuan)
 - 2 backends → **1 binary dummy column** (reference: onnxruntime)
 
-Extended design matrix: $X_{\text{ext}} \in \mathbb{R}^{370 \times 14}$ (intercept + `Params_B` + 11 type dummies + 1 backend dummy). `Precision (Bits)` is dropped — zero variance, no information content.
+Extended design matrix: $X_{\text{ext}} \in \mathbb{R}^{370 \times 14}$ (intercept + `Params_B` + 11 type dummies + 1 backend dummy). `Precision (Bits)` is dropped here to strictly isolate the effects of the architecture family and parameter count.
 
 ### 7.3 Extended Coefficient Matrix (Ridge, λ=0.1, selected rows)
 
@@ -172,15 +167,15 @@ Extended design matrix: $X_{\text{ext}} \in \mathbb{R}^{370 \times 14}$ (interce
 
 | Model | Throughput CV $R^2$ | Memory CV $R^2$ | Score CV $R^2$ | Mean |
 | --- | --- | --- | --- | --- |
-| Ridge — base (2 predictors) | 0.119 | 0.522 | 0.367 | 0.336 |
+| Ridge — base (2 predictors) | 0.138 | 0.550 | 0.366 | 0.351 |
 | **Ridge — extended (13 predictors)** | **0.512** | **0.479** | **0.687** | **0.559** |
 | Elastic Net — extended | 0.250 | 0.523 | 0.393 | 0.389 |
 
-**Throughput CV $R^2$: 0.12 → 0.51 (+0.39).** Architecture family is the dominant driver of inference speed — not model size. The 2-predictor model was substantially underspecified.
+**Throughput CV $R^2$: 0.14 → 0.51 (+0.37).** Architecture family is the dominant driver of inference speed — not model size. The 2-predictor model was substantially underspecified.
 
 **Score CV $R^2$: 0.37 → 0.69 (+0.32).** Benchmark accuracy is heavily architecture-dependent. LLaMA-family models consistently outperform older GPT-2/GPT-Neo architectures at equivalent sizes.
 
-**Memory CV $R^2$: 0.52 → 0.48 (−0.04).** A slight drop — memory is strongly driven by raw parameter count already, and adding 11 architecture dummies introduces mild overfitting on the memory response (bias-variance tradeoff). In-sample R² improved (0.56 → 0.58), but CV penalises the added complexity.
+**Memory CV $R^2$: 0.55 → 0.48 (−0.07).** A slight drop — memory is strongly driven by raw parameter count already, and adding 11 architecture dummies introduces mild overfitting on the memory response (bias-variance tradeoff). In-sample R² improved, but CV penalises the added complexity.
 
 **Elastic Net underperforms Ridge in the extended model** — the L1 penalty shrinks the architecture dummy coefficients too aggressively, zeroing out effects that are real. Ridge is the correct regulariser when all predictors carry genuine signal.
 
@@ -192,7 +187,7 @@ Extended design matrix: $X_{\text{ext}} \in \mathbb{R}^{370 \times 14}$ (interce
 | Memory | −0.12 | 1.00 | +0.34 |
 | Score | −0.35 | +0.34 | 1.00 |
 
-The Throughput↔Memory residual correlation drops from **−0.63 → −0.12** after controlling for architecture type. This is a direct diagnostic: architecture family was the hidden confounder driving the apparent throughput-memory trade-off in the base model. Once architecture is held constant, the residuals are much more independent.
+The Throughput↔Memory residual correlation drops from **−0.24 → −0.12** after controlling for architecture type. This is a direct diagnostic: architecture family was the hidden confounder driving the apparent throughput-memory trade-off in the base model. Once architecture is held constant, the residuals are much more independent.
 
 ---
 
@@ -200,9 +195,9 @@ The Throughput↔Memory residual correlation drops from **−0.63 → −0.12**
 
 | Model | Throughput CV $R^2$ | Memory CV $R^2$ | Score CV $R^2$ | Mean CV $R^2$ |
 | --- | --- | --- | --- | --- |
-| Gaussian OLS — base | 0.119 | 0.522 | 0.367 | 0.336 |
-| Ridge — base (λ=0.1) | 0.119 | 0.522 | 0.367 | 0.336 |
-| Elastic Net — base | 0.120 | 0.522 | 0.371 | 0.337 |
+| Gaussian OLS — base | 0.138 | 0.550 | 0.366 | 0.351 |
+| Ridge — base (λ=0.1) | 0.138 | 0.550 | 0.366 | 0.351 |
+| Elastic Net — base | 0.138 | 0.550 | 0.370 | 0.353 |
 | Gaussian OLS — extended | 0.512 | 0.475 | 0.688 | 0.558 |
 | **Ridge — extended (λ=0.1)** | **0.512** | **0.479** | **0.687** | **0.559** |
 | Elastic Net — extended | 0.250 | 0.523 | 0.393 | 0.389 |
@@ -211,7 +206,7 @@ The Throughput↔Memory residual correlation drops from **−0.63 → −0.12**
 
 ## 9. Conclusion
 
-**The main finding is that architecture family, not model size alone, drives LLM inference performance.** Adding architecture type as categorical predictors increased mean CV $R^2$ from 0.336 to 0.559, with the largest gains on Throughput (+0.39) and Score (+0.32). The backend runtime (pytorch vs ONNXRuntime) also contributed a ~115 token/s throughput difference invisible to the base model.
+**The main finding is that architecture family, not model size alone, drives LLM inference performance.** Adding architecture type as categorical predictors increased mean CV $R^2$ from 0.351 to 0.559, with the largest gains on Throughput (+0.37) and Score (+0.32). The backend runtime (pytorch vs ONNXRuntime) also contributed a ~115 token/s throughput difference invisible to the base model.
 
 The **Ridge extended model is the best overall** — it outperforms OLS on Memory (regularisation stabilises low-frequency architecture estimates), matches OLS on Throughput and Score, and substantially outperforms Elastic Net (which over-shrinks the architecture dummies).
 
@@ -221,7 +216,7 @@ The **Ridge extended model is the best overall** — it outperforms OLS on Mem
 
 **Limitations:**
 
-- `Precision (Bits)` had zero variance — a multi-precision dataset (int4/int8/fp16/fp32) would make it a genuinely useful predictor and address the singularity problem at source.
+- Although `Precision (Bits)` captured some variance between 16-bit and 32-bit deployments, a broader multi-precision dataset (int4/int8/fp16/fp32) would make it a more comprehensive predictor of hardware impacts.
 - Low-frequency architecture families (ChatGLM, Baichuan: 4 observations each) have high-variance coefficient estimates. More data would stabilise these.
 - Throughput residuals are heteroscedastic — a log-linear model would likely improve fit.
 - Memory CV $R^2$ slightly declined in the extended model, indicating that architecture type adds limited information for memory prediction beyond what parameter count already captures.
